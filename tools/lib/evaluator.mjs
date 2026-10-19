@@ -374,8 +374,13 @@ export function simulateFacility({ facility, ops, plan, timeline, limits, fillA 
     }
     daily[day] = y;
     if (dayInjections) lastInjections = dayInjections;
-    if (day >= limits.burnInDays) {
-      let key = '';
+    // ── 收敛判据 ①：心情状态精确复现 ⇒ 取该循环的均值 ──
+    // 状态复现就是**真循环**（同一心情向量 + 同一排班/助力相位 ⇒ 未来逐日相同），
+    // 所以在任何一天探测到都精确，不需要等烧入期。`DSH_SIM_BURNIN=1` 可切回旧行为做对照。
+    const detectFrom = process.env.DSH_SIM_BURNIN ? limits.burnInDays : 0;
+    if (day >= detectFrom) {
+      // 助力有周期时，相位也是状态的一部分：同心情但相位不同 ⇒ 未来不同，不能算复现。
+      let key = cycleDays ? `#${day % cycleDays}` : '';
       for (let s = 0; s < k; s += 1) {
         const mv = moodArr[s];
         let part = fmtCache.get(mv);

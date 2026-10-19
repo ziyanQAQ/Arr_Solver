@@ -28,38 +28,83 @@ function maskAll(n) {
   return m;
 }
 
+/** 补位变体的上限（决策 53，按实测修订为 4）：双舱最坏 4×4 = 16 条分支。
+ *  实测（`tools/test/prep-cap.mjs`，S4 必须与参考一致 42.5866）：
+ *    预算 8 → S4 ✔ / S8 11215 节点；4 → S4 ✔ / S8 7237；3 → S4 ✔ / S8 5152；2 → S4 ✘ 40.6266；1 → ✘
+ *  故取 4：比实测下限 3 留一档余量，同时比 8 少约 40% 的节点。
+ *  `DSH_VARIANT_BUDGET` 只用于测量，不设定时取默认值。 */
+const VARIANT_BUDGET = Number(process.env.DSH_VARIANT_BUDGET || 4);
+
+/**
+ * 值前缀剪枝（P5，决策 61）：产出向量是字典序比较，下游类别只能**追加**，
+ * 所以"本深度的前缀已严格劣于现任"⇒ 任何补全都赢不了，整棵子树可以剪。
+ *
+ * 两道限制（都是实测逼出来的）：
+ *   · **只剪浅层**：剪枝要求"被剪结果不写 memo"，深剪会把 memo 的收益抹掉
+ *     （实测不限深度：聚合叶子 +31%、memo 命中 −34%）；`PRUNE_DEPTH = 2` 时只有 −6.5% 叶子。
+ *   · **`DSH_PRUNE_DEPTH=-1` 关闭**，用于 A/B 对照与回退。
+ */
+const PRUNE_DEPTH = process.env.DSH_PRUNE_DEPTH === undefined
+  ? 2 : Number(process.env.DSH_PRUNE_DEPTH);
+const PRUNED = Symbol('pruned');
+
+/** 前缀是否**严格**劣于现任（打平不剪：后缀未知，ADR 0002 的两级裁决还没走到人数） */
+function prefixStrictlyWorse(prefix, incScore, tol) {
+  if (!incScore) return false;
+  const len = Math.min(prefix.length, incScore.length);
+  for (let i = 0; i < len; i += 1) {
+    if (Math.abs(prefix[i] - incScore[i]) <= tol) continue;
+    return prefix[i] < incScore[i];
+  }
+  return false;
+}
+
+/**
+ * 闭式值缓存（P2，决策 47）：**只在内存、进程退出即丢**，不落盘、不跨运行。
+ *
+ * 键 = 中枢时间轴指纹 + 签名对指纹；签名 `(unit, d, n)` 是取值函数的**全部入参**，
+ * 所以命中后返回的数组与原算逐位相同（不是近似）。
+ *
+ * 为了不把"造键"的成本吃进收益，签名先**登记成整数 ID**（每个签名对象只付一次字符串成本），
+ * 再用数字键查表。
+ */
+const SIG_ID = new Map();              // 签名指纹字符串 → 小整数
+let SIG_NEXT = 1;
+function sigIdOf(st) {
+  if (st.sid !== undefined) return st.sid;
+  const k = st.unit + '|' + st.d + '|' + st.n;
+  let id = SIG_ID.get(k);
+  if (id === undefined) { id = SIG_NEXT; SIG_NEXT += 1; SIG_ID.set(k, id); }
+  st.sid = id;
+  return id;
+}
+
+const SIG_HOUR_CACHE = new Map();      // centerKey → Map<number, 23 项数组>
+const SIG_RETAINED_CACHE = new Map();  // centerKey → Map<number, 保留集数组>
+const SIG_CACHE_CAP = 2000;            // 上限只针对"中枢份数"；清空纯缓存永远安全
+const PAIR_STRIDE = 1 << 20;           // idA * STRIDE + idB
+
+/** 仅供测试/计时：清空跨调用共享缓存，让下一次求解等价于"冷启动"。 */
+export function resetCaches() {
+  SIG_HOUR_CACHE.clear();
+  SIG_RETAINED_CACHE.clear();
+  SIG_ID.clear();
+  SIG_NEXT = 1;
+}
+
+const centerFingerprint = (center) => `${center.hCenter}|${center.uA}|${center.uB}`;
+
+function pairMap(root, centerKey) {
+  let m = root.get(centerKey);
+  if (!m) {
+    if (root.size > SIG_CACHE_CAP) root.clear();
+    m = new Map();
+    root.set(centerKey, m);
+  }
+  return m;
+}
+
 const charIdOf = (op) => op.charId || op.name;
-
-/** 决定性尾序用的占用串（设施顺序 → A/B 班 charId 升序）；§6.8 四级打平后用它保证可复现 */
-function facilityOrderOf(key) {
-  if (key === '会客室') return 0;
-  const m = /^制造舱(\d)$/.exec(key);
-  if (m) return Number(m[1]);
-  if (key === '培养舱') return 9;
-  return 5;
-}
-
-function occPairsOf(ops, picks) {
-  return picks.map((p) => {
-    const idsA = toIndices(union(p.crewA, p.fillCrewA || EMPTY)).map((i) => charIdOf(ops[i])).sort();
-    const idsB = toIndices(union(p.crewB || EMPTY, p.fillCrewB || EMPTY)).map((i) => charIdOf(ops[i])).sort();
-    return { o: facilityOrderOf(p.spec.key), s: `${p.spec.key}|A:${idsA.join(',')}|B:${idsB.join(',')}` };
-  });
-}
-
-function mergeOcc(a, b) {
-  return a.concat(b).sort((x, y) => x.o - y.o || (x.s < y.s ? -1 : x.s > y.s ? 1 : 0));
-}
-
-function mergeSorted(a, b) {
-  const out = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length && j < b.length) out.push(a[i] <= b[j] ? a[i++] : b[j++]);
-  while (i < a.length) out.push(a[i++]);
-  while (j < b.length) out.push(b[j++]);
-  return out;
-}
 
 // ───────────────────────── 中枢枚举 ─────────────────────────
 export let PURE_USEFUL = new Set();
@@ -278,9 +323,20 @@ function buildFacilityTable(ctx, spec, avail) {
   /** 该签名对全部 23 个 h 的闭式/上界（缓存；值驱动展开与打分共用） */
   const hoursAllOf = (i, j) => {
     const key = i * G + j;
-    if (hoursAll[key]) return hoursAll[key];
+    if (hoursAll[key]) { ctx.counters.closedFormHits += 1; return hoursAll[key]; }
+    ctx.counters.closedFormEvals += 1;   // 观测：一次 = 23 个 h 的闭式/上界计算
     const stA = groups[i].st;
     const stB = groups[j].st;
+    // 跨状态/跨中枢/跨两遍求解的共享缓存（键 = 取值函数的全部入参）
+    const hourMap = pairMap(SIG_HOUR_CACHE, ctx.centerKey);
+    const sharedKey = sigIdOf(stA) * PAIR_STRIDE + sigIdOf(stB);
+    const shared = hourMap.get(sharedKey);
+    if (shared) {
+      hoursAll[key] = shared;
+      ctx.counters.sigHourHits += 1;
+      return shared;
+    }
+    ctx.counters.sigHourEvals += 1;
     const list = [];
     for (let h = 1; h <= 23; h += 1) {
       const eA = shiftFromRecovery({ st: stA, len: h, R: cumMax - cum[h] });
@@ -312,13 +368,29 @@ function buildFacilityTable(ctx, spec, avail) {
       });
     }
     hoursAll[key] = list;
+    if (hourMap.size > 400000) hourMap.clear();
+    hourMap.set(sharedKey, list);
     return list;
   };
 
   const hoursFor = (i, j) => {
     const key = i * G + j;
-    if (hoursArr[key]) return hoursArr[key];
+    if (hoursArr[key]) { ctx.counters.retainedHits += 1; return hoursArr[key]; }
+    ctx.counters.retainedEvals += 1;     // 观测：一次 = 一遍保留集挑选
     const stA = groups[i].st;
+    // 保留集只由 (签名对, 中枢, limits) 决定 ⇒ 与闭式值同样可以跨状态共享。
+    // `hLimit` 是测试钩子，一旦启用就绕开共享缓存，避免把截断结果泄漏给别的场景。
+    const hLimit = ctx.testOptions && ctx.testOptions.hLimit;
+    const retMap = pairMap(SIG_RETAINED_CACHE, ctx.centerKey);
+    const sharedKey = sigIdOf(stA) * PAIR_STRIDE + sigIdOf(groups[j].st);
+    if (!hLimit) {
+      const shared = retMap.get(sharedKey);
+      if (shared) {
+        hoursArr[key] = shared;
+        ctx.counters.sigRetainedHits += 1;
+        return shared;
+      }
+    }
     const list = hoursAllOf(i, j).slice().sort((a, b) => b.cf - a.cf || a.h - b.h);
     const tolH = ctx.cfg.limits.valueTol;
     const maxCf = list[0].cf;
@@ -344,6 +416,10 @@ function buildFacilityTable(ctx, spec, avail) {
     // 测试钩子：hLimit 只保留前 n 个 h，用来验证"差分测试真的能抓到 h 错误"
     if (ctx.testOptions && ctx.testOptions.hLimit) retained = retained.slice(0, ctx.testOptions.hLimit);
     hoursArr[key] = retained;
+    if (!hLimit) {
+      if (retMap.size > 400000) retMap.clear();
+      retMap.set(sharedKey, retained);
+    }
     return retained;
   };
 
@@ -486,17 +562,21 @@ function simKey(ctx, table, cand, assistPlan) {
 function evaluateCand(ctx, table, cand) {
   if (cand.evaluated) return cand;
   cand.evaluated = true;
+  ctx.counters.evaluations += 1;         // 观测：统一计数（单设施 + 双舱两条路径都算）
   if (cand.stable) {
     cand.currentValue = cand.cf;
     cand.converged = true;
     return cand;
   }
   const key = simKey(ctx, table, cand, null);
+  ctx.counters.simCalls += 1;
   let sim = ctx.simCache.get(key);
+  if (sim) ctx.counters.simHits += 1;
   if (!sim) {
     sim = simulateCand(ctx, table, cand, null);
     ctx.simCache.set(key, sim);
     ctx.counters.simulated += 1;
+    noteSim(ctx, sim);
   }
   if (!sim.converged) {
     noteUnresolved(ctx, cand.bound ?? cand.cf);
@@ -554,6 +634,17 @@ function assistVariants(ctx, table, cand) {
   return out;
 }
 
+/** 模拟结果画像（P3 观测）：区分"精确循环收敛"与"漂移判据收敛"，以及用了多少天。 */
+function noteSim(ctx, sim) {
+  const c = ctx.counters;
+  if (!sim) return;
+  if (sim.cycleLen > 0) c.simCycle += 1;
+  else if (sim.converged) c.simDrift += 1;
+  else c.simUnresolved += 1;
+  c.simDaysSum += sim.days || 0;
+  if ((sim.days || 0) > c.simDaysMax) c.simDaysMax = sim.days || 0;
+}
+
 function applyAssist(ctx, table, cand, assistLeft) {
   if (!ctx.cfg.assistOn || assistLeft <= 0 || cand.single || cand.stable) return cand;
   const tol = ctx.cfg.limits.valueTol;
@@ -562,11 +653,14 @@ function applyAssist(ctx, table, cand, assistLeft) {
   for (const variant of assistVariants(ctx, table, cand)) {
     if (variant.points > assistLeft) continue;
     const key = simKey(ctx, table, cand, variant);
+    ctx.counters.simCalls += 1;
     let sim = ctx.simCache.get(key);
+    if (sim) ctx.counters.simHits += 1;
     if (!sim) {
       sim = simulateCand(ctx, table, cand, variant);
       ctx.simCache.set(key, sim);
       ctx.counters.simulated += 1;
+      noteSim(ctx, sim);
     }
     if (!sim.converged) { noteUnresolved(ctx, cand.bound ?? cand.cf); continue; }
     if (sim.avg > best.value + tol
@@ -685,15 +779,21 @@ function maximizePair(ctx, tableA) {
     for (let p = 0; p < n; p += 1) if (has(mask, bits[p])) idx |= 1 << p;
     return idx;
   };
-  const cid = (mask) => toIndices(mask).map((i) => charIdOf(ctx.ops[i])).sort().join(',');
+  const cidCache = new Map();
+  const cid = (mask) => {
+    let s = cidCache.get(mask);
+    if (s === undefined) {
+      s = toIndices(mask).map((i) => charIdOf(ctx.ops[i])).sort().join(',');
+      cidCache.set(mask, s);
+    }
+    return s;
+  };
   const demandOf = (plan) => {
     if (plan.single) return 0;
     const a = (plan.stA.d * plan.h) / Math.max(EPS, 24 - plan.h);
     const b = (plan.stB.d * (24 - plan.h)) / Math.max(EPS, plan.h);
     return Math.max(a, b);
   };
-  const hourOf = (plan) => (plan.single ? 0 : plan.h);
-
   const inst = [];
   const seen = new Set();
   const strideKey = (a, b, h) => (a * tableA.subList.length + b) * 24 + h;   // 数值键，避开 BigInt→字符串
@@ -786,14 +886,23 @@ function maximizePair(ctx, tableA) {
     }
   };
 
-  const better = (a, b) => {
-    // 同一占用集内的实例择优：值 → 需求↓ → 班长↑ → 占用串
-    if (Math.abs(a.v - b.v) > tol) return a.v > b.v;
-    const da = a.evaluated ? a.e.demand : a.e.demand;
-    void da;
-    if (Math.abs(a.e.demand - b.e.demand) > tol) return a.e.demand < b.e.demand;
-    if (Math.abs(hourOf(a.e) - hourOf(b.e)) > tol) return hourOf(a.e) > hourOf(b.e);
-    return a.e.occ < b.e.occ;
+  // 同一占用集（同一 footprint ⇒ 占用人数也相同）内的实例择优：
+  // 裁决只剩"值"这一级（ADR 0002），值打平就保留先遇到的。
+  const better = (a, b) => (Math.abs(a.v - b.v) > tol ? a.v > b.v : false);
+
+  // 复用缓冲：size 可达 2^16，原来每轮守卫都新建 4 张表（742 轮 ⇒ 数 GB 的分配，GC 的主要来源）
+  const buffers = new Map();
+  const bufOf = (t) => {
+    let b = buffers.get(t);
+    if (!b) {
+      b = {
+        cell: new Array(size), cellStable: new Array(size),
+        valAny: new Float64Array(size), argAny: new Array(size),
+        valStable: new Float64Array(size), argStable: new Array(size),
+      };
+      buffers.set(t, b);
+    }
+    return b;
   };
 
   // ── 补位池是两座同类设施**共享**的：单舱最多吃 fMax 个补位，两舱合起来不能超过 mCap ──
@@ -807,21 +916,22 @@ function maximizePair(ctx, tableA) {
     : Array.from({ length: Math.min(fMax, mCap) + 1 }, (_, k) => k);
   const needOf = (e) => e.fillNeed ?? 0;
 
-  const sos = (cells) => {
-    const v = new Float64Array(size).fill(-Infinity);
-    const a = new Array(size).fill(null);
+  /** 把 cell 表做 subset-max，结果写进复用的缓冲（不分配） */
+  const sosInto = (cells, val, arg) => {
+    val.fill(-Infinity);
+    arg.fill(null);
     for (let i = 0; i < size; i += 1) {
-      if (cells[i]) { v[i] = cells[i].v; a[i] = cells[i].e; }
+      const c = cells[i];
+      if (c) { val[i] = c.v; arg[i] = c.e; }
     }
     for (let p = 0; p < n; p += 1) {
       const bit = 1 << p;
       for (let m = 0; m < size; m += 1) {
         if (!(m & bit)) continue;
         const prev = m ^ bit;
-        if (v[prev] > v[m]) { v[m] = v[prev]; a[m] = a[prev]; }
+        if (val[prev] > val[m]) { val[m] = val[prev]; arg[m] = arg[prev]; }
       }
     }
-    return { val: v, arg: a };
   };
 
   const runLoop = (layered) => {
@@ -831,14 +941,18 @@ function maximizePair(ctx, tableA) {
       // 一次遍历 `inst` 同时填"任意实例"和"稳定实例"两张表（原来扫两遍，5 万实例 × 12 轮守卫很贵）。
       const layer = new Map();
       for (const t of caps) {
-        const cell = new Array(size).fill(null);
-        const cellStable = new Array(size).fill(null);
-        for (const e of inst) {
-          if (needOf(e) > t) continue;
+        const buf = bufOf(t);
+        const cell = buf.cell;
+        const cellStable = buf.cellStable;
+        cell.fill(null);
+        cellStable.fill(null);
+        for (let k = 0; k < inst.length; k += 1) {
+          const e = inst[k];
+          if ((e.fillNeed ?? 0) > t) continue;
           const v = e.evaluated
             ? (Number.isFinite(e.currentValue) ? e.currentValue : -Infinity)
             : Math.max(e.cf, e.stable ? e.cf : e.ub);
-          const cur = { v, e, evaluated: e.evaluated };
+          const cur = { v, e };
           const prev = cell[e.local];
           if (!prev || better(cur, prev)) cell[e.local] = cur;
           if (e.stable) {
@@ -847,7 +961,12 @@ function maximizePair(ctx, tableA) {
             if (!prevS || better(curS, prevS)) cellStable[e.local] = curS;
           }
         }
-        layer.set(t, { any: sos(cell), stable: sos(cellStable) });
+        sosInto(cell, buf.valAny, buf.argAny);
+        sosInto(cellStable, buf.valStable, buf.argStable);
+        layer.set(t, {
+          any: { val: buf.valAny, arg: buf.argAny },
+          stable: { val: buf.valStable, arg: buf.argStable },
+        });
       }
       const cap2Of = (t1) => (layered ? Math.min(fMax, mCap - t1) : fMax);
       const feasiblePair = (a, b) => !!a && !!b && a !== b
@@ -1022,16 +1141,27 @@ function* realizations(cand, table) {
   }
 }
 
-function realizeFillers(ctx, table, cand, subA, subB, catIdx, usedInCategory) {
+/**
+ * 补位（白板）怎么挑：返回**多个可选方案**，不是只挑一个。
+ *
+ * 为什么不能只挑一个：补位的人对**本设施**产出没有影响（白板），但对**后续类别**有影响。
+ * 只按 (laterRel, charId) 贪心挑一个，会出现"本类别同分、却把下个类别的主力当白板烧掉"的情况
+ * （压力测试 S4 抓到的真实漏解：会客室无线索技能 ⇒ 全靠白板 ⇒ 烧掉武器经验的陈千语，导致武器经验低 1.96）。
+ *
+ * 做法（决策 35/36/53）：基准序仍是 (非 laterRel 优先, charId 升序)，它给出默认解；
+ * 只有当默认解里**确实混进了后续类别要用的人**时，才逐个把这些人换成候补，生成至多 8 个变体，
+ * 交给上层按 §6.8（两级：人数 → 首遇）与下游产出裁决。
+ */
+function realizeFillerVariants(ctx, table, cand, subA, subB, catIdx, usedInCategory) {
   const needA = (cand.nA ?? table.seats) - sizeOf(subA);
   const needB = cand.single ? 0 : (cand.nB ?? table.seats) - sizeOf(subB);
   const need = needA + needB;
-  if (!need) return { fillCrewA: EMPTY, fillCrewB: EMPTY };
+  if (!need) return [{ fillCrewA: EMPTY, fillCrewB: EMPTY }];
   const avail = without(ctx.availMask, union(usedInCategory, union(subA, subB)));
   const pool = toIndices(without(avail, table.rel));
   if (pool.length < need) return null;      // 补位只能来自"本设施用不上的干员"
   const laterRel = catIdx + 1 < ctx.cats.length ? ctx.laterRel[catIdx + 1] : EMPTY;
-  pool.sort((a, b) => {
+  const order = (list) => list.slice().sort((a, b) => {
     const la = has(laterRel, a) ? 1 : 0;
     const lb = has(laterRel, b) ? 1 : 0;
     if (la !== lb) return la - lb;
@@ -1039,11 +1169,49 @@ function realizeFillers(ctx, table, cand, subA, subB, catIdx, usedInCategory) {
     const ib = charIdOf(ctx.ops[b]);
     return ia < ib ? -1 : ia > ib ? 1 : 0;
   });
-  let fillCrewA = EMPTY;
-  let fillCrewB = EMPTY;
-  for (let k = 0; k < needA; k += 1) fillCrewA |= 1n << BigInt(pool[k]);
-  for (let k = needA; k < need; k += 1) fillCrewB |= 1n << BigInt(pool[k]);
-  return { fillCrewA, fillCrewB };
+  const build = (chosen) => {
+    let fillCrewA = EMPTY;
+    let fillCrewB = EMPTY;
+    for (let k = 0; k < chosen.length; k += 1) {
+      const bit = 1n << BigInt(chosen[k]);
+      if (k < needA) fillCrewA |= bit; else fillCrewB |= bit;
+    }
+    return { fillCrewA, fillCrewB };
+  };
+
+  if (process.env.DEBUG_FILL) {
+    const nm2 = (m) => toIndices(m).map((k) => ctx.ops[k].name).join(',');
+    console.error(`[fill-entry] cat=${ctx.cats[catIdx]} ${table.spec.key} need=${need} pool=${pool.length} rel=${nm2(table.rel)}`);
+  }
+  const sorted = order(pool);
+  const base = sorted.slice(0, need);
+  const out = [build(base)];
+
+  // 白板对本科目等价、对下游不等价：把"烧掉谁"当搜索维度，才不会把下一个类别的主力当白板烧掉
+  // （压力测试 S4 就是靠这一步把武器经验从 40.63 补到 42.59）。
+  // 语义条件（决策 35）：变体之间**只可能在"烧掉谁"上不同**。若基准补位里没有一个人落在
+  // 后续类别相关集内，任何变体对下游都等价 ⇒ 不生成变体（省掉纯浪费的枚举）。
+  // 生成口径（决策 36）：只**换出**，不做全组合枚举——把基准补位里的每个"下游要用的人"
+  // 逐个换成候补池里的人（`sorted` 已把非下游相关的人排在前面）。上限 8 个（决策 53）。
+  const hit = base.filter((x) => has(laterRel, x));
+  if (hit.length) {
+    const spare = sorted.filter((x) => !base.includes(x));
+    outer:
+    for (const person of hit) {
+      for (const repl of spare) {
+        if (out.length >= VARIANT_BUDGET) break outer;
+        const chosen = base.slice();
+        chosen[chosen.indexOf(person)] = repl;
+        out.push(build(chosen));
+      }
+    }
+  }
+  if (process.env.DEBUG_FILL && out.length > 1) {
+    const nm = (m) => toIndices(m).map((k) => ctx.ops[k].name).join(',');
+    console.error(`[fill-variants] cat=${ctx.cats[catIdx]} ${table.spec.key} need=${need} pool=${pool.length}`
+      + ` variants=${out.length} ` + out.map((v) => `A[${nm(v.fillCrewA)}]B[${nm(v.fillCrewB)}]`).join(' / '));
+  }
+  return out;
 }
 
 function buildPick(ctx, table, cand, subA, subB, fillers) {
@@ -1068,23 +1236,6 @@ function buildPick(ctx, table, cand, subA, subB, fillers) {
     simulation: cand.simulation || null,
     closedForm: !cand.simulation,
   };
-}
-
-function facilityTieHour(pick) {
-  if (pick.single) return pick.stA.d > EPS ? 1 / pick.stA.d : 0;
-  return pick.h;
-}
-
-function facilityDemand(pick, timeline) {
-  if (pick.single) {
-    if (!(pick.stA.d > EPS)) return 0;
-    const T = 1 / pick.stA.d;
-    const tFull = timeToRecoverWrap(1, T, timeline);
-    return Number.isFinite(tFull) && tFull > 0 ? 1 / tFull : Infinity;
-  }
-  const needA = (pick.stA.d * pick.h) / Math.max(EPS, 24 - pick.h);
-  const needB = (pick.stB.d * (24 - pick.h)) / Math.max(EPS, pick.h);
-  return Math.max(needA, needB);
 }
 
 // ───────────────────────── 类别分支 ─────────────────────────
@@ -1164,109 +1315,37 @@ function categoryBranchesBody(ctx, catIdx, usedMask, assistLeft) {
   const laterRel = catIdx + 1 < ctx.cats.length ? ctx.laterRel[catIdx + 1] : EMPTY;
 
   const addBranch = (entries, total) => {
-    let used = EMPTY;
-    for (const e of entries) used = union(used, union(e.subA, e.subB || EMPTY));
-    const picks = [];
-    let assistUsed = 0;
-    for (const e of entries) {
-      const fillers = realizeFillers(ctx, e.table, e.cand, e.subA, e.subB || EMPTY, catIdx, used);
-      if (!fillers) {
+    const baseUsed = entries.reduce((u, e) => union(u, union(e.subA, e.subB || EMPTY)), EMPTY);
+    // 补位可能有多个等价方案（白板对本科目无影响、对后续科目有影响）⇒ 逐个都交给保留逻辑裁决
+    const walk = (i, used, picks, assistUsed) => {
+      if (i === entries.length) { finish(used, picks, assistUsed); return; }
+      const e = entries[i];
+      const variants = realizeFillerVariants(ctx, e.table, e.cand, e.subA, e.subB || EMPTY, catIdx, used);
+      if (!variants) {
         if (process.env.DEBUG_DFS) {
-          const nm = (m) => toIndices(m).map((i) => ctx.ops[i].name).join(',');
+          const nm = (m) => toIndices(m).map((k) => ctx.ops[k].name).join(',');
           console.error(`[addBranch-fail] cat=${cat} hc=${ctx.center.hCenter} ${e.table.spec.key} `
             + `nA=${e.cand.nA} nB=${e.cand.nB} single=${!!e.cand.single} subA=${nm(e.subA)} subB=${nm(e.subB)} used=${nm(used)}`);
         }
         return;
       }
-      const pick = buildPick(ctx, e.table, e.cand, e.subA, e.subB || EMPTY, fillers);
-      used = union(used, union(pick.fillCrewA, pick.fillCrewB));
-      assistUsed += pick.assistUsed;
-      picks.push(pick);
-    }
+      for (const fillers of variants) {
+        const pick = buildPick(ctx, e.table, e.cand, e.subA, e.subB || EMPTY, fillers);
+        walk(i + 1, union(used, union(pick.fillCrewA, pick.fillCrewB)), [...picks, pick],
+          assistUsed + pick.assistUsed);
+      }
+    };
+    const finish = (used, picks, assistUsed) => {
     if (assistUsed > assistLeft) return;
-    const branch = {
-      value: total,
-      picks,
-      usedMask: used,
-      assistUsed,
-      demand: picks.reduce((m, p) => Math.max(m, facilityDemand(p, ctx.center.timeline)), 0),
-      usedCount: sizeOf(used),
-      tieHours: picks.map(facilityTieHour),
-      // §6.8 第 3 条按"设施顺序"逐个比班长（不是取最大值），所以这里存整理后的序列
-      hoursKey: picks
-        .slice()
-        .sort((x, y) => facilityOrderOf(x.spec.key) - facilityOrderOf(y.spec.key))
-        .map(facilityTieHour),
-      occPairs: occPairsOf(ctx.ops, picks),
-      charIds: picks.flatMap((p) => toIndices(union(p.crewA, union(p.crewB, union(p.fillCrewA, p.fillCrewB)))))
-        .map((i) => charIdOf(ctx.ops[i])),
-    };
+    const branch = { value: total, picks, usedMask: used, assistUsed, usedCount: sizeOf(used) };
     const key = `${used & laterRel}|${assistUsed}`;
-    // 同一占用集下，§6.8 的裁决是"中枢需求更小 → 班长更大（逐设施）→ charId → 占用串"。
-    // 父层看到的中枢需求是 max(本类别, 后续类别)，后续设施可能盖过本类别，
-    // 所以这里保留 (需求↓, 逐设施班长↑) 的帕累托前沿，不能只留一条。
-    const arr = seen.get(key) || [];
-    const sortedIds = (b) => b.charIds.slice().sort();
-    const cmpIds = (x, y) => {
-      const a = sortedIds(x);
-      const b = sortedIds(y);
-      for (let i = 0; i < Math.min(a.length, b.length); i += 1) {
-        if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
-      }
-      return a.length - b.length;
+    // 同一 key 内：产出同档、裁决只看占用人数（ADR 0002）
+    //   · 人数更少 ⇒ 支配（占的人更少，下游只会更好，裁决第 2 级也更优）
+    //   · 人数相同 ⇒ 等价，保留先遇到的那条（不做任何二级比较）
+    const old = seen.get(key);
+    if (!old || branch.usedCount < old.usedCount) seen.set(key, branch);
     };
-    const cmpOcc = (x, y) => {
-      const a = (x.occPairs || []).map((p) => p.s);
-      const b = (y.occPairs || []).map((p) => p.s);
-      for (let i = 0; i < Math.min(a.length, b.length); i += 1) {
-        if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
-      }
-      return a.length - b.length;
-    };
-    /** 逐设施班长比较：>0 表示 x 的班长更大（更优） */
-    const cmpHours = (x, y) => {
-      const a = x.hoursKey;
-      const b = y.hoursKey;
-      for (let i = 0; i < Math.min(a.length, b.length); i += 1) {
-        if (Math.abs(a[i] - b[i]) > tol) return a[i] > b[i] ? 1 : -1;
-      }
-      return 0;
-    };
-    /** §6.8 全序：需求↓ → 逐设施班长↑ → charId↑ → 占用串↑（越小越优） */
-    const cmpPlan = (x, y) => {
-      if (Math.abs(x.demand - y.demand) > tol) return x.demand < y.demand ? 1 : -1;
-      const h = cmpHours(x, y);
-      if (h) return h;
-      const c = cmpIds(x, y);
-      if (c) return -c;
-      return -cmpOcc(x, y);
-    };
-    let dominated = false;
-    for (const old of arr) {
-      const sameDemand = Math.abs(old.demand - branch.demand) <= tol;
-      const hCmp = cmpHours(old, branch);
-      if (sameDemand && hCmp === 0) {
-        // 完全打平 ⇒ 用 charId/占用串决，老的更优则丢弃新的
-        if (cmpPlan(old, branch) > 0) { dominated = true; break; }
-      } else if (old.demand <= branch.demand + tol && hCmp >= 0) {
-        dominated = true;                  // 老的在需求与班长上都不差 ⇒ 支配
-        break;
-      }
-    }
-    if (process.env.DEBUG_BRANCH) {
-      const names = (m) => toIndices(m).map((i) => ctx.ops[i].name).join(',');
-      console.error(`[branch] cat=${cat} hc=${ctx.center.hCenter} key=${key} drop=${dominated} used=${names(branch.usedMask)} hours=${branch.hoursKey.join('/')}`);
-    }
-    if (!dominated) {
-      const kept = arr.filter((old) => {
-        const sameDemand = Math.abs(old.demand - branch.demand) <= tol;
-        const hCmp = cmpHours(branch, old);
-        if (sameDemand && hCmp === 0) return cmpPlan(branch, old) > 0;   // 新更优 ⇒ 替换
-        return !(branch.demand <= old.demand + tol && hCmp >= 0);
-      });
-      kept.push(branch);
-      seen.set(key, kept);
-    }
+    walk(0, baseUsed, [], 0);
   };
 
   if (tables.length === 1) {
@@ -1331,8 +1410,7 @@ function categoryBranchesBody(ctx, catIdx, usedMask, assistLeft) {
       })), total);
     }
   }
-  const flatBranches = [];
-  for (const list of seen.values()) for (const b of list) flatBranches.push(b);
+  const flatBranches = [...seen.values()];
   if (process.env.DEBUG_DFS) {
     const nm = (m) => toIndices(m).map((i) => ctx.ops[i].name).join(',');
     console.error(`[catret] cat=${cat} hc=${ctx.center.hCenter} avail=${nm(ctx.availMask)} `
@@ -1403,23 +1481,25 @@ function compareBranches(a, b) {
 }
 
 // ───────────────────────── DFS ─────────────────────────
-function metricsOf({ score, demand, usedCount, tieHours, charIds, occupancy }) {
-  return { score, centerDemand: demand, usedCount, keepStrength: 0, tieHours, charIds, occupancy };
+/** 裁决只剩两级（ADR 0002）：产出向量 → 占用人数 */
+function metricsOf({ score, usedCount }) {
+  return { score, usedCount };
 }
 
-function dfs(ctx, catIdx, usedMask, assistLeft, prefixDemand) {
+function dfs(ctx, catIdx, usedMask, assistLeft, prefixScore) {
   if (!ctx.budget.tick()) return null;
+  ctx.counters.dfsCalls += 1;
   if (catIdx >= ctx.cats.length) {
-    return {
-      score: [], picks: [], catRes: {}, usedMask: EMPTY, assistUsed: 0,
-      demand: 0, usedCount: 0, tieHours: [], charIds: [], occPairs: [],
-    };
+    ctx.counters.leaves += 1;
+    return { score: [], picks: [], catRes: {}, usedMask: EMPTY, assistUsed: 0, usedCount: 0 };
   }
-  // 记忆化键：类别序号 + 完整占用集 + 剩余助力 + 已有中枢需求。
+  // 记忆化键：类别序号 + 完整占用集 + 剩余助力。
   // （文档 Q2 的"掩掉无关干员"只在"补位只能从无关池取"时等价；本实现允许无关干员补位，
-  //   所以键里保留完整占用集，避免把不同补位状态错并。）
-  const key = `${catIdx}|${usedMask}|${assistLeft}|${prefixDemand.toFixed(9)}`;
-  if (ctx.memo.has(key)) return ctx.memo.get(key);
+  //   所以键里保留完整占用集，避免把不同补位状态错并。
+  //   中枢需求已退出裁决（ADR 0002），不再是键的一维。）
+  const key = `${catIdx}|${usedMask}|${assistLeft}`;
+  if (ctx.memo.has(key)) { ctx.counters.memoHits += 1; return ctx.memo.get(key); }
+  ctx.counters.memoMisses += 1;
 
   const cat = ctx.cats[catIdx];
   const branches = categoryBranches(ctx, catIdx, usedMask, assistLeft);
@@ -1436,7 +1516,8 @@ function dfs(ctx, catIdx, usedMask, assistLeft, prefixDemand) {
         detail: `可用 ${left} 人，满工位最少需要 ${need} 人`,
       });
     }
-    const rest = dfs(ctx, catIdx + 1, usedMask, assistLeft, prefixDemand);
+    const rest = dfs(ctx, catIdx + 1, usedMask, assistLeft, [...prefixScore, 0]);
+    if (rest === PRUNED) return PRUNED;
     if (!rest) { ctx.memo.set(key, null); return null; }
     const res = {
       ...rest,
@@ -1449,25 +1530,29 @@ function dfs(ctx, catIdx, usedMask, assistLeft, prefixDemand) {
 
   let best = null;
   let bestMetrics = null;
+  let tainted = false;                    // 有子树被现任剪掉 ⇒ 本节点结果不完整，不能写 memo
   for (const branch of branches) {
     if (ctx.budget.exhausted) break;
+    ctx.counters.branchIters += 1;
+    // 值前缀剪枝（只在浅层，见 PRUNE_DEPTH 的注释）
+    if (PRUNE_DEPTH >= 0 && catIdx <= PRUNE_DEPTH && ctx.incumbent) {
+      const prefix = [...prefixScore, branch.value];
+      if (prefixStrictlyWorse(prefix, ctx.incumbent.score, ctx.cfg.limits.valueTol)) {
+        ctx.counters.prunedR1 += 1;
+        tainted = true;
+        continue;
+      }
+    }
     if (process.env.DEBUG_DFS) {
       const nm = (m) => toIndices(m).map((i) => ctx.ops[i].name).join(',');
       console.error(`[dfs-step] cat=${cat} hc=${ctx.center.hCenter} branch=${nm(branch.usedMask)}`);
     }
     const rest = dfs(ctx, catIdx + 1, union(usedMask, branch.usedMask), assistLeft - branch.assistUsed,
-      Math.max(prefixDemand, branch.demand));
+      [...prefixScore, branch.value]);
+    if (rest === PRUNED) { tainted = true; continue; }
     if (!rest) continue;
     const score = [branch.value, ...rest.score];
-    const occPairs = mergeOcc(branch.occPairs || [], rest.occPairs || []);
-    const metrics = metricsOf({
-      score,
-      demand: Math.max(branch.demand, rest.demand),
-      usedCount: branch.usedCount + rest.usedCount,
-      tieHours: branch.tieHours.concat(rest.tieHours),
-      charIds: mergeSorted(branch.charIds.slice().sort(), rest.charIds),
-      occupancy: occPairs.map((x) => x.s),
-    });
+    const metrics = metricsOf({ score, usedCount: branch.usedCount + rest.usedCount });
     if (!bestMetrics || comparePlans(metrics, bestMetrics, ctx.cfg) > 0) {
       bestMetrics = metrics;
       best = {
@@ -1476,11 +1561,7 @@ function dfs(ctx, catIdx, usedMask, assistLeft, prefixDemand) {
         catRes: { [cat]: { value: branch.value, picks: branch.picks }, ...rest.catRes },
         usedMask: union(branch.usedMask, rest.usedMask),
         assistUsed: branch.assistUsed + rest.assistUsed,
-        demand: metrics.centerDemand,
         usedCount: metrics.usedCount,
-        tieHours: metrics.tieHours,
-        charIds: metrics.charIds,
-        occPairs,
       };
     }
   }
@@ -1489,8 +1570,15 @@ function dfs(ctx, catIdx, usedMask, assistLeft, prefixDemand) {
     const sc = best ? best.score.map((x) => (Number.isFinite(x) ? x.toFixed(4) : String(x))).join('/') : 'null';
     console.error(`[dfs] cat=${cat} branches=${branches.length} used=${names(usedMask)} => ${sc}`);
   }
-  ctx.memo.set(key, best);
-  return best;
+  // 现任（P5）：只有能构成完整方案时（深度 0）才发布，且必须是真实可行的方案
+  if (catIdx === 0 && best) {
+    const m = metricsOf({ score: best.score, usedCount: best.usedCount });
+    if (!ctx.incumbent || comparePlans(m, ctx.incumbent, ctx.cfg) > 0) ctx.incumbent = m;
+  }
+  // 被剪过的节点结果不完整：写进 memo 会把"下界"当成该状态的最优值，污染别的路径
+  if (!tainted) ctx.memo.set(key, best);
+  else ctx.counters.memoSkipPruned += 1;
+  return best || (tainted ? PRUNED : null);
 }
 
 // ───────────────────────── 主入口 ─────────────────────────
@@ -1576,12 +1664,22 @@ export function solveLayout({ ops, cfg, testOptions = null }) {
     cost: 0, relaxed: true,
   }] : enumerateCenters(ops, cfg);
   const budget = makeBudget(cfg);
-  const counters = { evaluated: 0, simulated: 0 };
+  // 观测（P0，决策 52 第 ① 步）：只加计数，**不改变任何搜索行为**。
+  // 说明：`evaluated` 沿用历史语义（只在单设施路径自增），新的统一计数见 `evaluations`。
+  const counters = {
+    evaluated: 0, simulated: 0,
+    dfsCalls: 0, leaves: 0, branchIters: 0, memoHits: 0, memoMisses: 0,
+    closedFormEvals: 0, closedFormHits: 0, retainedEvals: 0, retainedHits: 0,
+    evaluations: 0, simCalls: 0, simHits: 0,
+    sigHourHits: 0, sigHourEvals: 0, sigRetainedHits: 0,
+    simCycle: 0, simDrift: 0, simUnresolved: 0, simDaysSum: 0, simDaysMax: 0,
+    prunedR1: 0, memoSkipPruned: 0,
+  };
   const approximations = new Set();
 
   const base = {
     ops, cfg, cats, byCat, catRel, laterRel, allMask, budget, counters, approximations, testOptions,
-    simCache: new Map(), availMask: allMask, gapsList: [],
+    simCache: new Map(), availMask: allMask, gapsList: [], incumbent: null,
   };
 
   let best = null;
@@ -1589,28 +1687,23 @@ export function solveLayout({ ops, cfg, testOptions = null }) {
   for (const center of centers) {
     if (budget.exhausted) break;
     centersVisited += 1;
-    const ctx = { ...base, center, cum: recoveryTable(center.timeline), memo: new Map() };
-    const res = dfs(ctx, 0, center.used, cfg.assistPoints, 0);
-    if (!res) continue;
+    const ctx = {
+      ...base, center, cum: recoveryTable(center.timeline), memo: new Map(),
+      centerKey: centerFingerprint(center),
+    };
+    const res = dfs(ctx, 0, center.used, cfg.assistPoints, []);
+    if (!res || res === PRUNED) continue;
     // 补位等价替换（§6.8 第 5 条）：白板换成字典序更小的 charId，值不变；必须在算 usedMask 之前做
     upgradeFillers(ops, { picks: res.picks, center });
     const used = res.picks.reduce(
       (m, p) => union(m, union(union(p.crewA, p.crewB || EMPTY), union(p.fillCrewA || EMPTY, p.fillCrewB || EMPTY))),
       center.used,
     );
-    const pickIds = res.picks
-      .flatMap((p) => toIndices(union(p.crewA, union(p.crewB, union(p.fillCrewA, p.fillCrewB)))))
-      .map((i) => charIdOf(ops[i]));
-    const metrics = metricsOf({
-      score: res.score,
-      demand: res.demand,
-      usedCount: sizeOf(used),
-      tieHours: res.tieHours,
-      charIds: mergeSorted(toIndices(center.used).map((i) => charIdOf(ops[i])).sort(), pickIds),
-      occupancy: occPairsOf(ops, res.picks).map((x) => x.s),
-    });
+    const metrics = metricsOf({ score: res.score, usedCount: sizeOf(used) });
     const cand = { score: res.score, metrics, center, catRes: res.catRes, usedMask: used, picks: res.picks };
     if (!best || comparePlans(metrics, best.metrics, cfg) > 0) best = cand;
+    // 跨中枢现任（P5）：下一条中枢就能用上，弱中枢会更早被剪
+    if (!base.incumbent || comparePlans(metrics, base.incumbent, cfg) > 0) base.incumbent = metrics;
   }
 
   // 未收敛候选只在"上界仍能威胁最终方案"时才算数（真实值 ≤ 上界）：
@@ -1650,6 +1743,8 @@ export function solveLayout({ ops, cfg, testOptions = null }) {
       unresolvedAll: unresolvedAll.length,
       approximations: [...approximations],
       gaps: [...new Map(base.gapsList.map((g) => [`${g.cat}|${g.reason}|${g.detail}`, g])).values()],
+      // 观测（P0）：只报告事实，不参与任何判断
+      search: { ...counters },
       assistOn: !!cfg.assistOn,
     },
   };
