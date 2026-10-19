@@ -1,0 +1,71 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='960' height='640' font-family='Microsoft YaHei,Microsoft JhengHei,Segoe UI,sans-serif'>
+<rect width='960' height='640' fill='#ffffff'/>
+<text x='78' y='30' font-size='20' font-weight='bold' fill='#111827'>制造舱：18/6 衰退班 反超 17/7 稳定班</text>
+<text x='78' y='52' font-size='12' fill='#6b7280'>A 组 莱万汀/庄方宜/余烬（干员经验 90%、减免 36%，E=4.18）｜B 组 3 白板（E=2.20）｜中枢只有 12%（v=13.44%/h）</text>
+<line x1='78' y1='319.2' x2='928' y2='319.2' stroke='#f1f5f9'/>
+<text x='68' y='323.2' font-size='11' fill='#9ca3af' text-anchor='end'>86.0</text>
+<line x1='78' y1='282.1' x2='928' y2='282.1' stroke='#f1f5f9'/>
+<text x='68' y='286.1' font-size='11' fill='#9ca3af' text-anchor='end'>86.5</text>
+<line x1='78' y1='245' x2='928' y2='245' stroke='#f1f5f9'/>
+<text x='68' y='249' font-size='11' fill='#9ca3af' text-anchor='end'>87.0</text>
+<line x1='78' y1='207.9' x2='928' y2='207.9' stroke='#f1f5f9'/>
+<text x='68' y='211.9' font-size='11' fill='#9ca3af' text-anchor='end'>87.5</text>
+<line x1='78' y1='170.8' x2='928' y2='170.8' stroke='#f1f5f9'/>
+<text x='68' y='174.8' font-size='11' fill='#9ca3af' text-anchor='end'>88.0</text>
+<line x1='78' y1='133.7' x2='928' y2='133.7' stroke='#f1f5f9'/>
+<text x='68' y='137.7' font-size='11' fill='#9ca3af' text-anchor='end'>88.5</text>
+<line x1='78' y1='334' x2='928' y2='334' stroke='#d1d5db'/>
+<text x='22' y='219' font-size='12' fill='#374151' transform='rotate(-90 22 219)' text-anchor='middle'>日产出（等效小时）</text>
+<text x='78' y='92' font-size='13' font-weight='bold' fill='#374151'>① 每天产出多少　（纵轴只放大到 85.8–88.9，差距才看得见）</text>
+<polyline points='78,285 105.4,285 132.8,285 160.3,285 187.7,285 215.1,285 242.5,285 269.9,285 297.4,285 324.8,285 352.2,285 379.6,285 407,285 434.5,285 461.9,285 489.3,285 516.7,285 544.1,285 571.5,285 599,285 626.4,285 653.8,285 681.2,285 708.6,285 736.1,285 763.5,285 790.9,285 818.3,285 845.7,285 873.2,285 900.6,285 928,285' fill='none' stroke='#059669' stroke-width='3.5'/>
+<polyline points='78,138.1 105.4,138.1 132.8,138.1 160.3,138.1 187.7,138.1 215.1,138.1 242.5,138.1 269.9,138.1 297.4,230.7 324.8,138.1 352.2,178.2 379.6,176.5 407,181.4 434.5,167 461.9,208.9 489.3,138.1 516.7,241.7 544.1,138.1 571.5,146.2 599,269.8 626.4,138.1 653.8,138.1 681.2,219.3 708.6,138.1 736.1,211.4 763.5,138.1 790.9,234.6 818.3,138.1 845.7,166.8 873.2,209.4 900.6,138.1 928,240.3' fill='none' stroke='#2563eb' stroke-width='2.4'/>
+<circle cx='297.4' cy='230.7' r='2.8' fill='#dc2626'/>
+<circle cx='352.2' cy='178.2' r='2.8' fill='#dc2626'/>
+<circle cx='379.6' cy='176.5' r='2.8' fill='#dc2626'/>
+<circle cx='407' cy='181.4' r='2.8' fill='#dc2626'/>
+<circle cx='434.5' cy='167' r='2.8' fill='#dc2626'/>
+<circle cx='461.9' cy='208.9' r='2.8' fill='#dc2626'/>
+<circle cx='516.7' cy='241.7' r='2.8' fill='#dc2626'/>
+<circle cx='571.5' cy='146.2' r='2.8' fill='#dc2626'/>
+<circle cx='599' cy='269.8' r='2.8' fill='#dc2626'/>
+<circle cx='681.2' cy='219.3' r='2.8' fill='#dc2626'/>
+<circle cx='736.1' cy='211.4' r='2.8' fill='#dc2626'/>
+<circle cx='790.9' cy='234.6' r='2.8' fill='#dc2626'/>
+<circle cx='845.7' cy='166.8' r='2.8' fill='#dc2626'/>
+<circle cx='873.2' cy='209.4' r='2.8' fill='#dc2626'/>
+<circle cx='928' cy='240.3' r='2.8' fill='#dc2626'/>
+<line x1='78' y1='177.5' x2='928' y2='177.5' stroke='#dc2626' stroke-dasharray='7,5' stroke-width='1.7'/>
+<text x='84' y='170' font-size='11' fill='#dc2626'>18/6 长期均值 87.91（红虚线）</text>
+<text x='922' y='302' font-size='11' fill='#059669' text-anchor='end'>17/7 稳定 = 86.46（天天相同）</text>
+<text x='84' y='138.1' font-size='10.5' fill='#2563eb' dy='-6'>首日满班 88.44</text>
+<rect x='78' y='64' width='13' height='13' fill='#2563eb'/><text x='97' y='75' font-size='12.5' fill='#111827'>18/6 衰退班（红点＝当天红脸）</text>
+<rect x='336' y='64' width='13' height='13' fill='#059669'/><text x='355' y='75' font-size='12.5' fill='#111827'>17/7 稳定班</text>
+<text x='78' y='370' font-size='13' font-weight='bold' fill='#374151'>② 每天开工时还剩多少心情</text>
+<line x1='78' y1='546.3' x2='928' y2='546.3' stroke='#f1f5f9'/>
+<text x='68' y='550.3' font-size='11' fill='#9ca3af' text-anchor='end'>80%</text>
+<line x1='78' y1='507.2' x2='928' y2='507.2' stroke='#f1f5f9'/>
+<text x='68' y='511.2' font-size='11' fill='#9ca3af' text-anchor='end'>85%</text>
+<line x1='78' y1='468.1' x2='928' y2='468.1' stroke='#f1f5f9'/>
+<text x='68' y='472.1' font-size='11' fill='#9ca3af' text-anchor='end'>90%</text>
+<line x1='78' y1='429' x2='928' y2='429' stroke='#f1f5f9'/>
+<text x='68' y='433' font-size='11' fill='#9ca3af' text-anchor='end'>95%</text>
+<line x1='78' y1='389.8' x2='928' y2='389.8' stroke='#f1f5f9'/>
+<text x='68' y='393.8' font-size='11' fill='#9ca3af' text-anchor='end'>100%</text>
+<line x1='78' y1='562' x2='928' y2='562' stroke='#d1d5db'/>
+<text x='22' y='472' font-size='12' fill='#374151' transform='rotate(-90 22 472)' text-anchor='middle'>开工时心情</text>
+<text x='922' y='384' font-size='10.5' fill='#059669' text-anchor='end'>17/7 天天 100%</text>
+<text x='84' y='552' font-size='10.5' fill='#dc2626'>红虚线 = 不稳定定点 82.36%（心情围绕它来回摆，永不回满）</text>
+<polyline points='78,389.8 105.4,389.8 132.8,389.8 160.3,389.8 187.7,389.8 215.1,389.8 242.5,389.8 269.9,389.8 297.4,389.8 324.8,389.8 352.2,389.8 379.6,389.8 407,389.8 434.5,389.8 461.9,389.8 489.3,389.8 516.7,389.8 544.1,389.8 571.5,389.8 599,389.8 626.4,389.8 653.8,389.8 681.2,389.8 708.6,389.8 736.1,389.8 763.5,389.8 790.9,389.8 818.3,389.8 845.7,389.8 873.2,389.8 900.6,389.8 928,389.8' fill='none' stroke='#059669' stroke-width='3.5'/>
+<polyline points='78,389.8 105.4,407.9 132.8,425.9 160.3,443.9 187.7,462 215.1,480 242.5,498 269.9,516 297.4,534.1 324.8,509.9 352.2,528 379.6,527.8 407,528.3 434.5,526.7 461.9,531.5 489.3,517.3 516.7,535.4 544.1,506.2 571.5,524.2 599,538.6 626.4,496.7 653.8,514.7 681.2,532.8 708.6,513.8 736.1,531.8 763.5,516.5 790.9,534.5 818.3,508.6 845.7,526.6 873.2,531.6 900.6,517.2 928,535.2' fill='none' stroke='#f59e0b' stroke-width='2.4'/>
+<line x1='78' y1='527.9' x2='928' y2='527.9' stroke='#dc2626' stroke-dasharray='4,4' stroke-width='1.2' opacity='0.7'/>
+<text x='78' y='584' font-size='10' fill='#9ca3af' text-anchor='middle'>1</text>
+<text x='187.7' y='584' font-size='10' fill='#9ca3af' text-anchor='middle'>5</text>
+<text x='297.4' y='584' font-size='10' fill='#9ca3af' text-anchor='middle'>9</text>
+<text x='407' y='584' font-size='10' fill='#9ca3af' text-anchor='middle'>13</text>
+<text x='516.7' y='584' font-size='10' fill='#9ca3af' text-anchor='middle'>17</text>
+<text x='626.4' y='584' font-size='10' fill='#9ca3af' text-anchor='middle'>21</text>
+<text x='736.1' y='584' font-size='10' fill='#9ca3af' text-anchor='middle'>25</text>
+<text x='845.7' y='584' font-size='10' fill='#9ca3af' text-anchor='middle'>29</text>
+<text x='928' y='584' font-size='10' fill='#9ca3af' text-anchor='middle'>32</text>
+<text x='503' y='608' font-size='12' fill='#374151' text-anchor='middle'>天数　（第 9 天起心情不再回满，锁在 80.7%~87.3% 来回摆，产出 86.37~88.44 逐日游走，不进入固定循环）</text>
+</svg>
